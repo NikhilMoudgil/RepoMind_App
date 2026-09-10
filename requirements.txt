@@ -5,3 +5,4 @@ GitPython
 chromadb
 sentence-transformers
 langchain-text-splitters
+tochvision
