@@ -1,0 +1,7 @@
+streamlit
+python-dotenv
+groq
+GitPython
+chromadb
+sentence-transformers
+langchain-text-splitters

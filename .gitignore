@@ -1,0 +1,55 @@
+# Environment variables (NEVER commit secrets to GitHub)
+.env
+.env*.local
+*.env
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python compiled files & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Node / Next.js dependencies & builds
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS System Files
+.DS_Store
+Thumbs.db
+
+# Vercel deployment artifacts
+.vercel/
+# RepoMind Local Storage
+backend/cloned_repos/
+backend/chroma_db/
+# Environments
+.venv/
+env/
+__pycache__/
+
+# Secrets
+.env
+
+# Databases
+backend/chroma_db/
+# Ignore cloned GitHub repositories
+backend/cloned_repos/
+
+# Ignore vector database storage (if stored locally)
+backend/chroma_db/
