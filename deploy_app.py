@@ -3,20 +3,18 @@ import streamlit as st
 from dotenv import load_dotenv
 from groq import Groq
 
-# Import your existing backend logic
+# Backend module imports
+from backend.query_decomposer import decompose_query
 from backend.repo_loader import clone_repository
-from backend.file_parser import load_and_chunk_files
+from backend.file_parser import load_and_chunk_files, generate_repo_tree
 from backend.vector_store import index_chunks_in_vector_db, search_similar_code
 
-# Load environment variables from local .env file (ignored in cloud)
 load_dotenv()
 
-# Configure page settings
 st.set_page_config(page_title="RepoMind", layout="wide", page_icon="🧠")
-
 st.title("🧠 RepoMind: Chat with your Codebase")
 
-# Safely fetch API key: Try Streamlit Secrets first (Cloud), fallback to os.getenv (Local)
+# Fetch API Key
 api_key = None
 try:
     if "GROQ_API_KEY" in st.secrets:
@@ -39,7 +37,7 @@ if "repo_name" not in st.session_state:
 if "repo_path" not in st.session_state:
     st.session_state.repo_path = None
 
-# Sleek Sidebar UI
+# Sidebar Setup
 st.sidebar.header("⚙️ Repository Setup")
 repo_url = st.sidebar.text_input("GitHub Repository URL", placeholder="https://github.com/user/repo")
 
@@ -47,7 +45,6 @@ if st.sidebar.button("Clone & Index Repository", use_container_width=True):
     if not repo_url:
         st.sidebar.warning("Please enter a repository URL.")
     else:
-        # Use st.status for a clean, collapsible loading sequence
         with st.sidebar.status("Processing Repository...", expanded=True) as status:
             try:
                 st.write("📥 Cloning repository...")
@@ -63,11 +60,7 @@ if st.sidebar.button("Clone & Index Repository", use_container_width=True):
                 else:
                     st.write("🗄️ Indexing into Vector DB...")
                     indexed_count = index_chunks_in_vector_db(st.session_state.repo_name, chunks)
-                    
-                    # Update status to complete and collapse the box
                     status.update(label=f"Ready! Indexed {indexed_count} chunks.", state="complete", expanded=False)
-                    
-                    # Ephemeral popup notification
                     st.toast(f"Successfully loaded {st.session_state.repo_name}!", icon="🎉")
                     
             except Exception as e:
@@ -79,35 +72,50 @@ if st.session_state.repo_name:
     st.markdown(f"### 📂 Currently querying: **`{st.session_state.repo_name}`**")
     st.divider()
     
-    # Modern Chat Input instead of a clunky text area
     prompt = st.chat_input("Ask a question about this codebase...")
     
     if prompt:
-        # Display user message bubble
         with st.chat_message("user"):
             st.write(prompt)
             
-        # Display assistant message bubble
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing codebase..."):
+            with st.spinner("Analyzing codebase architecture..."):
                 try:
-                    # Retrieve context snippets
-                    relevant_snippets = search_similar_code(st.session_state.repo_name, prompt, top_k=3)
+                    # STEP 1: Decompose query into targeted search queries
+                    sub_queries = decompose_query(prompt, client)
                     
+                    # STEP 2: Retrieve and deduplicate snippets across all sub-queries
+                    retrieved_map = {}
+                    for q in sub_queries:
+                        snippets = search_similar_code(st.session_state.repo_name, q, top_k=2)
+                        for s in snippets:
+                            source = s["metadata"].get("source", "unknown")
+                            chunk_idx = s["metadata"].get("chunk_index", 0)
+                            unique_key = f"{source}_{chunk_idx}"
+                            retrieved_map[unique_key] = s
+
+                    relevant_snippets = list(retrieved_map.values())[:5]
+                    
+                    # Format context snippets string
                     context_str = ""
                     for snippet in relevant_snippets:
                         source = snippet["metadata"].get("source", "unknown")
                         context_str += f"\n--- File: {source} ---\n{snippet['page_content']}\n"
 
-                    # Construct RAG prompt
+                    # STEP 3: Generate repository tree layout
+                    repo_tree = generate_repo_tree(st.session_state.repo_path) if st.session_state.repo_path else ""
+
+                    # STEP 4: Construct System & User Prompt with context + repo tree
                     system_prompt = (
                         "You are RepoMind, an expert AI assistant that analyzes codebases.\n"
-                        "Use the provided code snippets from the repository to answer the user's prompt accurately.\n"
+                        "Below is the file tree structure of the repository:\n"
+                        f"```\n{repo_tree}\n```\n\n"
+                        "Use both the file tree structure and the provided code snippets to answer the user's prompt accurately.\n"
                         "If the answer cannot be found in the snippets, mention that clearly."
                     )
                     user_prompt = f"Code Context:\n{context_str}\n\nUser Question:\n{prompt}"
 
-                    # Generate response via Groq
+                    # STEP 5: Execute Groq LLM Completion
                     completion = client.chat.completions.create(
                         model="openai/gpt-oss-120b",
                         messages=[
@@ -119,8 +127,12 @@ if st.session_state.repo_name:
                     
                     st.write(completion.choices[0].message.content)
 
-                    # Collapsible expander for raw context
-                    with st.expander("🔍 View Retrieved Source Code"):
+                    # Display search queries and retrieved context
+                    with st.expander("🔍 View Search Queries & Retrieved Source Code"):
+                        st.markdown("**Generated Sub-Queries:**")
+                        for sq in sub_queries:
+                            st.caption(f"• `{sq}`")
+                        st.divider()
                         for snippet in relevant_snippets:
                             source = snippet["metadata"].get("source", "unknown")
                             st.markdown(f"**{source}**")
@@ -129,5 +141,4 @@ if st.session_state.repo_name:
                 except Exception as e:
                     st.error(f"Query failed: {str(e)}")
 else:
-    # Empty state UI
     st.info("👈 Please clone and index a repository using the sidebar to start chatting.")
