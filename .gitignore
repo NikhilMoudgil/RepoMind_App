@@ -53,3 +53,26 @@ backend/cloned_repos/
 
 # Ignore vector database storage (if stored locally)
 backend/chroma_db/
+# Environment variables & secrets (CRITICAL: prevents API key leaks)
+.env
+*.env
+
+# Local ChromaDB vector database storage
+chroma_db/
+
+# Python virtual environment
+venv/
+env/
+ENV/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Streamlit local configuration & secrets
+.streamlit/secrets.toml
+
+# IDE settings
+.vscode/
+.idea/

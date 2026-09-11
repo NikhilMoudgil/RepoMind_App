@@ -1,15 +1,19 @@
 import os
+import hashlib
 from typing import List, Dict, Any
 from langchain_text_splitters import RecursiveCharacterTextSplitter # type: ignore
 from langchain_text_splitters import Language # type: ignore
+
 # Directory/file patterns and extensions to ignore
 IGNORED_DIRS = {".git", "node_modules", "venv", "__pycache__", "dist", "build", ".vscode", ".idea"}
 IGNORED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".pdf", ".zip", ".tar", ".gz", ".exe", ".bin", ".lock"}
 ALLOWED_EXTENSIONS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".cpp", ".c",
     ".h", ".hpp",  ".java", ".cs", ".go", ".rs", ".md", 
-    ".txt", ".json", ".css", ".html", ".yaml", ".yml"}
-EXTENSION_TO_LANGUAGE ={
+    ".txt", ".json", ".css", ".html", ".yaml", ".yml"
+}
+
+EXTENSION_TO_LANGUAGE = {
     ".py": Language.PYTHON,
     ".js": Language.JS,
     ".jsx": Language.JS,
@@ -25,6 +29,17 @@ EXTENSION_TO_LANGUAGE ={
     ".cs": Language.CSHARP,
     ".md": Language.MARKDOWN,
 }
+
+# =====================================================================
+# UPDATE 1: Helper function placed at module top for clean execution
+# =====================================================================
+def get_file_hash(file_path: str) -> str:
+    """Generates an MD5 hash of a file to track modifications."""
+    hasher = hashlib.md5()
+    with open(file_path, "rb") as f:
+        hasher.update(f.read())
+    return hasher.hexdigest()
+
 def load_and_chunk_files(repo_path: str, chunk_size: int = 1000, chunk_overlap: int = 150) -> List[Dict[str, Any]]:
     """Traverses a cloned repository, reads allowed code files, and chunks them into text blocks with metadata."""
     documents = []
@@ -49,11 +64,17 @@ def load_and_chunk_files(repo_path: str, chunk_size: int = 1000, chunk_overlap: 
                 relative_path = os.path.relpath(file_path, repo_path)
 
                 try:
+                    # =====================================================================
+                    # UPDATE 2: Compute MD5 checksum before reading file content
+                    # =====================================================================
+                    file_hash = get_file_hash(file_path)
+
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
 
                     if not content.strip():
                         continue
+
                     # Select language-specific splitter or standard text splitter
                     if ext in EXTENSION_TO_LANGUAGE:
                         text_splitter = RecursiveCharacterTextSplitter.from_language(
@@ -73,13 +94,18 @@ def load_and_chunk_files(repo_path: str, chunk_size: int = 1000, chunk_overlap: 
                             "metadata": {
                                 "source": relative_path,  # Key matches vector_store expectations
                                 "chunk_index": idx,
-                                "total_chunks": len(chunks)
+                                "total_chunks": len(chunks),
+                                # =====================================================================
+                                # UPDATE 3: Inject file_hash into metadata for delta update tracking
+                                # =====================================================================
+                                "file_hash": file_hash  
                             }
                         })
                 except Exception as e:
                     print(f"Skipping file {file_path} due to error: {e}")
 
     return documents
+
 def generate_repo_tree(repo_path: str, max_depth: int = 4) -> str:
     """Generates an ASCII text tree representing the repository directory layout."""
     tree_lines = []
