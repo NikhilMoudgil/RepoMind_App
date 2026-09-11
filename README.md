@@ -33,12 +33,3 @@ RepoMind/
 ├── .env                     # Environment variables (API keys)
 ├── .gitignore
 └── README.md
-
-
-🚀 Getting StartedPrerequisitesPython 3.10+  Git installed on your operating system  A free Groq API Key (obtainable at console.groq.com)  1. Clone RepoMind & Set Up Virtual EnvironmentBashgit clone [https://github.com/YOUR_USERNAME/RepoMind.git](https://github.com/YOUR_USERNAME/RepoMind.git)
-cd RepoMind
-
-# Create virtual environment
-python -m venv venv
-Activate the environment:Windows (PowerShell): .\venv\Scripts\Activate.ps1  Mac/Linux: source venv/bin/activate  2. Install DependenciesBashpip install -r backend/requirements.txt
-pip install -r frontend/requirements.txt
