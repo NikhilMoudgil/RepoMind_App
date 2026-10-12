@@ -1,78 +1,30 @@
-# Environment variables (NEVER commit secrets to GitHub)
+# Secrets (never commit API keys)
 .env
-.env*.local
 *.env
+.env*.local
+.streamlit/secrets.toml
 
-# Python Virtual Environments
+# Virtual environments
 venv/
 .venv/
 env/
 ENV/
 
-# Python compiled files & caches
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
 .pytest_cache/
 
-# Node / Next.js dependencies & builds
-node_modules/
-.next/
-out/
-build/
-dist/
+# RepoMind data (generated at runtime)
+chroma_db/
+backend/chroma_db/
+backend/cloned_repos/
 
-# IDE & Editor settings
+# IDE and OS files
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# OS System Files
 .DS_Store
 Thumbs.db
-
-# Vercel deployment artifacts
-.vercel/
-# RepoMind Local Storage
-backend/cloned_repos/
-backend/chroma_db/
-# Environments
-.venv/
-env/
-__pycache__/
-
-# Secrets
-.env
-
-# Databases
-backend/chroma_db/
-# Ignore cloned GitHub repositories
-backend/cloned_repos/
-
-# Ignore vector database storage (if stored locally)
-backend/chroma_db/
-# Environment variables & secrets (CRITICAL: prevents API key leaks)
-.env
-*.env
-
-# Local ChromaDB vector database storage
-chroma_db/
-
-# Python virtual environment
-venv/
-env/
-ENV/
-
-# Python bytecode & cache
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Streamlit local configuration & secrets
-.streamlit/secrets.toml
-
-# IDE settings
-.vscode/
-.idea/

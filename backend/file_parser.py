@@ -1,133 +1,152 @@
 import os
 import hashlib
-from typing import List, Dict, Any
-from langchain_text_splitters import RecursiveCharacterTextSplitter # type: ignore
-from langchain_text_splitters import Language # type: ignore
+from typing import Any, Dict, Iterable, List, Tuple
 
-# Directory/file patterns and extensions to ignore
-IGNORED_DIRS = {".git", "node_modules", "venv", "__pycache__", "dist", "build", ".vscode", ".idea"}
-IGNORED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".pdf", ".zip", ".tar", ".gz", ".exe", ".bin", ".lock"}
-ALLOWED_EXTENSIONS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".cpp", ".c",
-    ".h", ".hpp",  ".java", ".cs", ".go", ".rs", ".md", 
-    ".txt", ".json", ".css", ".html", ".yaml", ".yml"
+from langchain_text_splitters import Language, RecursiveCharacterTextSplitter  # type: ignore
+
+IGNORED_DIRS = {
+    ".git", "node_modules", "venv", ".venv", "env", "__pycache__", "dist", "build",
+    ".vscode", ".idea", ".next", "target", "vendor", ".mypy_cache", ".pytest_cache",
+    "site-packages", "chroma_db", "cloned_repos",
 }
+IGNORED_FILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Cargo.lock"}
 
-EXTENSION_TO_LANGUAGE = {
-    ".py": Language.PYTHON,
-    ".js": Language.JS,
-    ".jsx": Language.JS,
-    ".ts": Language.TS,
-    ".tsx": Language.TS,
-    ".cpp": Language.CPP,
-    ".c": Language.CPP,
-    ".h": Language.CPP,
-    ".hpp": Language.CPP,
-    ".java": Language.JAVA,
-    ".go": Language.GO,
-    ".rs": Language.RUST,
-    ".cs": Language.CSHARP,
-    ".md": Language.MARKDOWN,
+# extension -> (label shown in the UI, language name for syntax highlighting)
+LANGUAGES = {
+    ".py": ("Python", "python"), ".js": ("JavaScript", "javascript"), ".jsx": ("JavaScript", "jsx"),
+    ".ts": ("TypeScript", "typescript"), ".tsx": ("TypeScript", "tsx"),
+    ".cpp": ("C++", "cpp"), ".c": ("C", "c"), ".h": ("C/C++ header", "c"), ".hpp": ("C/C++ header", "cpp"),
+    ".java": ("Java", "java"), ".cs": ("C#", "csharp"), ".go": ("Go", "go"), ".rs": ("Rust", "rust"),
+    ".rb": ("Ruby", "ruby"), ".php": ("PHP", "php"), ".kt": ("Kotlin", "kotlin"), ".swift": ("Swift", "swift"),
+    ".sh": ("Shell", "bash"), ".sql": ("SQL", "sql"), ".md": ("Markdown", "markdown"),
+    ".txt": ("Text", "text"), ".json": ("JSON", "json"), ".css": ("CSS", "css"), ".html": ("HTML", "html"),
+    ".yaml": ("YAML", "yaml"), ".yml": ("YAML", "yaml"), ".toml": ("TOML", "toml"),
 }
+ALLOWED_EXTENSIONS = set(LANGUAGES)
 
-# =====================================================================
-# UPDATE 1: Helper function placed at module top for clean execution
-# =====================================================================
-def get_file_hash(file_path: str) -> str:
-    """Generates an MD5 hash of a file to track modifications."""
-    hasher = hashlib.md5()
-    with open(file_path, "rb") as f:
-        hasher.update(f.read())
-    return hasher.hexdigest()
 
-def load_and_chunk_files(repo_path: str, chunk_size: int = 1000, chunk_overlap: int = 150) -> List[Dict[str, Any]]:
-    """Traverses a cloned repository, reads allowed code files, and chunks them into text blocks with metadata."""
-    documents = []
+def _lang(name: str):
+    return getattr(Language, name, None)
 
-    # Initialize code/text splitter
-    default_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len
-    )
 
+_SPLITTER_LANG = {
+    ".py": "PYTHON", ".js": "JS", ".jsx": "JS", ".ts": "TS", ".tsx": "TS",
+    ".cpp": "CPP", ".c": "CPP", ".h": "CPP", ".hpp": "CPP", ".java": "JAVA",
+    ".go": "GO", ".rs": "RUST", ".cs": "CSHARP", ".md": "MARKDOWN", ".html": "HTML",
+    ".rb": "RUBY", ".php": "PHP", ".kt": "KOTLIN", ".swift": "SWIFT",
+}
+EXTENSION_TO_LANGUAGE = {e: _lang(n) for e, n in _SPLITTER_LANG.items() if _lang(n) is not None}
+
+
+def language_label(path: str) -> str:
+    return LANGUAGES.get(os.path.splitext(path)[1].lower(), ("Other", "text"))[0]
+
+
+def code_language(path: str) -> str:
+    return LANGUAGES.get(os.path.splitext(path)[1].lower(), ("Other", "text"))[1]
+
+
+def _make_splitter(ext: str, size: int, overlap: int):
+    kwargs = dict(chunk_size=size, chunk_overlap=overlap, add_start_index=True)
+    if ext in EXTENSION_TO_LANGUAGE:
+        return RecursiveCharacterTextSplitter.from_language(language=EXTENSION_TO_LANGUAGE[ext], **kwargs)
+    return RecursiveCharacterTextSplitter(**kwargs)
+
+
+def load_and_chunk_files(
+    repo_path: str,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 150,
+    max_chunks: int = 6000,
+    max_file_bytes: int = 300_000,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Walks a repo and returns (chunks, skipped_files).
+
+    Each chunk carries source path, line range, extension and a content hash so
+    the vector store can update incrementally. Shallow files are processed first,
+    so if a repo exceeds `max_chunks` the deepest files are the ones skipped.
+    """
+    candidates = []
     for root, dirs, files in os.walk(repo_path):
-        # Filter out ignored directories in-place
         dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+        for name in files:
+            ext = os.path.splitext(name)[1].lower()
+            if name in IGNORED_FILES or ext not in ALLOWED_EXTENSIONS:
+                continue
+            path = os.path.join(root, name)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if size == 0 or size > max_file_bytes:
+                continue
+            rel = os.path.relpath(path, repo_path).replace(os.sep, "/")
+            candidates.append((rel.count("/"), rel, path, ext))
+    candidates.sort()
 
-        for file in files:
-            ext = os.path.splitext(file)[1].lower()
-            
-            # Process only text and code files
-            if ext in ALLOWED_EXTENSIONS and ext not in IGNORED_EXTENSIONS:
-                file_path = os.path.join(root, file)
-                relative_path = os.path.relpath(file_path, repo_path)
+    splitters: Dict[str, Any] = {}
+    chunks: List[Dict[str, Any]] = []
+    skipped = 0
 
-                try:
-                    # =====================================================================
-                    # UPDATE 2: Compute MD5 checksum before reading file content
-                    # =====================================================================
-                    file_hash = get_file_hash(file_path)
+    for _, rel, path, ext in candidates:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            content = data.decode("utf-8", errors="ignore")
+            if not content.strip() or "\x00" in content:
+                continue
 
-                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
+            splitter = splitters.setdefault(ext, _make_splitter(ext, chunk_size, chunk_overlap))
+            docs = splitter.create_documents([content])
+            if len(chunks) + len(docs) > max_chunks:
+                skipped += 1
+                continue
 
-                    if not content.strip():
-                        continue
+            file_hash = hashlib.md5(data).hexdigest()
+            for idx, d in enumerate(docs):
+                start = max(d.metadata.get("start_index", 0), 0)
+                start_line = content.count("\n", 0, start) + 1
+                chunks.append({
+                    "page_content": d.page_content,
+                    "metadata": {
+                        "source": rel,
+                        "ext": ext,
+                        "chunk_index": idx,
+                        "total_chunks": len(docs),
+                        "start_line": start_line,
+                        "end_line": start_line + d.page_content.count("\n"),
+                        "file_hash": file_hash,
+                    },
+                })
+        except Exception as e:  # keep indexing even if one file is odd
+            print(f"Skipping {path}: {e}")
+            skipped += 1
 
-                    # Select language-specific splitter or standard text splitter
-                    if ext in EXTENSION_TO_LANGUAGE:
-                        text_splitter = RecursiveCharacterTextSplitter.from_language(
-                            language=EXTENSION_TO_LANGUAGE[ext],
-                            chunk_size=chunk_size,
-                            chunk_overlap=chunk_overlap
-                        )
-                    else:
-                        text_splitter = default_splitter
+    return chunks, skipped
 
-                    # Split raw file content into chunks
-                    chunks = text_splitter.split_text(content)
 
-                    for idx, chunk in enumerate(chunks):
-                        documents.append({
-                            "page_content": chunk,  # Key matches vector_store expectations
-                            "metadata": {
-                                "source": relative_path,  # Key matches vector_store expectations
-                                "chunk_index": idx,
-                                "total_chunks": len(chunks),
-                                # =====================================================================
-                                # UPDATE 3: Inject file_hash into metadata for delta update tracking
-                                # =====================================================================
-                                "file_hash": file_hash  
-                            }
-                        })
-                except Exception as e:
-                    print(f"Skipping file {file_path} due to error: {e}")
+def build_tree(sources: Iterable[str], root: str = "repo", max_lines: int = 300) -> str:
+    """ASCII tree built from a list of relative file paths (no clone needed)."""
+    tree: Dict[str, Any] = {}
+    for s in sorted(sources):
+        node = tree
+        parts = s.split("/")
+        for p in parts[:-1]:
+            node = node.setdefault(p, {})
+        node[parts[-1]] = None
 
-    return documents
+    lines = [f"{root}/"]
 
-def generate_repo_tree(repo_path: str, max_depth: int = 4) -> str:
-    """Generates an ASCII text tree representing the repository directory layout."""
-    tree_lines = []
+    def render(node: Dict[str, Any], prefix: str = "") -> None:
+        items = sorted(node.items(), key=lambda kv: (kv[1] is None, kv[0].lower()))
+        for i, (name, child) in enumerate(items):
+            last = i == len(items) - 1
+            lines.append(f"{prefix}{'└── ' if last else '├── '}{name}{'/' if child is not None else ''}")
+            if child is not None:
+                render(child, prefix + ("    " if last else "│   "))
 
-    for root, dirs, files in os.walk(repo_path):
-        # Ignore hidden/build directories in-place
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
-
-        rel_path = os.path.relpath(root, repo_path)
-        depth = 0 if rel_path == "." else rel_path.count(os.sep) + 1
-
-        if depth > max_depth:
-            continue
-
-        indent = "  " * depth
-        folder_name = os.path.basename(root) if rel_path != "." else os.path.basename(repo_path)
-        tree_lines.append(f"{indent}📁 {folder_name}/")
-
-        sub_indent = "  " * (depth + 1)
-        for f in files:
-            ext = os.path.splitext(f)[1].lower()
-            if ext in ALLOWED_EXTENSIONS and ext not in IGNORED_EXTENSIONS:
-                tree_lines.append(f"{sub_indent}📄 {f}")
-
-    return "\n".join(tree_lines)
+    render(tree)
+    if len(lines) > max_lines:
+        extra = len(lines) - max_lines
+        lines = lines[:max_lines] + [f"... ({extra} more entries)"]
+    return "\n".join(lines)
