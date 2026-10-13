@@ -7,20 +7,26 @@ except ImportError:
     pass
 
 import os
+import uuid
 from collections import Counter
 
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-from groq import Groq
+from groq import Groq, RateLimitError
 
 from backend import rag, vector_store as vs
 from backend.file_parser import build_tree, code_language, language_label
 from backend.query_decomposer import decompose_query
+from backend.ratelimit import RateLimiter
 from backend.repo_loader import cleanup_clone, clone_repository
 
 load_dotenv()
 MAX_CHUNKS = int(os.getenv("MAX_CHUNKS", "6000"))
+# Limits apply only when visitors use YOUR server key. 0 disables a cap.
+LIMIT_PER_SESSION = int(os.getenv("RATE_LIMIT_PER_SESSION", "10"))   # questions per visitor
+LIMIT_GLOBAL = int(os.getenv("RATE_LIMIT_GLOBAL", "60"))             # questions across all visitors
+LIMIT_WINDOW_MIN = int(os.getenv("RATE_LIMIT_WINDOW_MIN", "10"))     # window length in minutes
 
 st.set_page_config(page_title="RepoMind", page_icon="🧠", layout="wide", initial_sidebar_state="expanded")
 
@@ -70,6 +76,7 @@ ss = st.session_state
 ss.setdefault("chats", {})       # repo_id -> list of messages
 ss.setdefault("summaries", {})   # repo_id -> AI briefing
 ss.setdefault("flash", None)
+ss.setdefault("session_id", uuid.uuid4().hex)
 
 EXAMPLE_REPOS = [
     "https://github.com/pallets/flask",
@@ -92,6 +99,39 @@ def set_url(url: str) -> None:
 
 def ask(question: str) -> None:
     ss["pending_prompt"] = question
+
+
+@st.cache_resource
+def get_limiter() -> RateLimiter:
+    return RateLimiter(LIMIT_PER_SESSION, LIMIT_GLOBAL, LIMIT_WINDOW_MIN * 60)
+
+
+def allow_request() -> bool:
+    """Counts one model request against the limits; shows a message and returns False if over."""
+    if not using_server_key:
+        return True
+    ok, wait, scope = get_limiter().check(ss["session_id"])
+    if ok:
+        return True
+    mins, secs = divmod(wait, 60)
+    when = f"{mins} min {secs} s" if mins else f"{secs} s"
+    if scope == "session":
+        st.warning(f"You've reached the limit of {LIMIT_PER_SESSION} questions per {LIMIT_WINDOW_MIN} minutes. Try again in {when}, or add your own Groq key in the sidebar to remove the limit.")
+    else:
+        st.warning(f"The demo is busy right now. Try again in {when}, or add your own Groq key in the sidebar to skip the queue.")
+    return False
+
+
+def explain_error(e: Exception) -> str:
+    if isinstance(e, RateLimitError):
+        retry = None
+        try:
+            retry = e.response.headers.get("retry-after")
+        except Exception:
+            pass
+        wait = f" Try again in about {retry} seconds." if retry else " Try again in a minute."
+        return "Groq's rate limit was reached." + wait + " A smaller model in Answer settings uses fewer tokens."
+    return f"The model request failed: {e}"
 
 
 @st.cache_data(show_spinner=False)
@@ -145,12 +185,15 @@ with st.sidebar:
     st.caption("Ask questions about any public GitHub repository.")
 
     key = server_key()
+    using_server_key = bool(key)
     if not key:
         key = st.text_input("Groq API key", type="password", help="Free at console.groq.com. Kept only in this browser session.")
     else:
         with st.expander("Use my own Groq key"):
             own = st.text_input("Groq API key", type="password", label_visibility="collapsed")
-            key = own or key
+            if own:
+                key = own
+                using_server_key = False
 
     st.divider()
     st.markdown("**Add a repository**")
@@ -282,6 +325,9 @@ if view == "💬 Chat":
             if m["role"] == "assistant" and show_sources:
                 render_sources(m.get("sources", []), m.get("queries", []))
 
+    if prompt and client and not allow_request():
+        prompt = None
+
     if prompt:
         if not client:
             st.warning("Add your Groq API key in the sidebar to ask questions.")
@@ -303,7 +349,7 @@ if view == "💬 Chat":
                     rag.stream_chat(client, model, rag.build_messages(tree, snippets, prompt, history), temperature)
                 )
             except Exception as e:
-                answer = f"The model request failed: `{e}`"
+                answer = explain_error(e)
                 st.error(answer)
 
             if show_sources:
@@ -344,14 +390,14 @@ else:
     if st.button("Regenerate briefing" if summary else "Generate briefing", type="primary"):
         if not client:
             st.warning("Add your Groq API key in the sidebar first.")
-        else:
+        elif allow_request():
             try:
                 with st.spinner("Reading key files…"):
                     msgs = rag.overview_messages(repo_id, tree, sources)
                 summary = st.write_stream(rag.stream_chat(client, model, msgs, 0.2))
                 ss["summaries"][repo_id] = summary
             except Exception as e:
-                st.error(f"The model request failed: {e}")
+                st.error(explain_error(e))
     elif summary:
         st.markdown(summary)
     if ss["summaries"].get(repo_id):

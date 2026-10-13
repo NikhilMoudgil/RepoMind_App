@@ -4,7 +4,7 @@ emoji: 🧠
 colorFrom: indigo
 colorTo: blue
 sdk: streamlit
-sdk_version: 1.65.0
+sdk_version: 1.40.0
 app_file: app.py
 pinned: false
 ---
@@ -36,3 +36,14 @@ streamlit run app.py
 4. The Space builds and starts. The first question downloads a ~80 MB embedding model once.
 
 Notes: free Space storage is ephemeral, so the index is rebuilt after a restart or sleep. The LLM runs on Groq, so the Space only does embeddings and search.
+
+## Rate limits
+When visitors use the server's `GROQ_API_KEY`, each visitor is limited per time window, and all visitors together are capped, so one person can't use up your free Groq quota. Visitors who paste their own key in the sidebar are not limited. If Groq itself returns a rate-limit error, the app shows a short "try again" message instead of a raw error.
+
+Tune it with environment variables (Space **Variables**, or `.env` locally). Use `0` to turn a cap off:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RATE_LIMIT_PER_SESSION` | `10` | questions per visitor per window |
+| `RATE_LIMIT_GLOBAL` | `60` | questions across all visitors per window |
+| `RATE_LIMIT_WINDOW_MIN` | `10` | window length in minutes |
