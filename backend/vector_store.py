@@ -1,22 +1,55 @@
 import hashlib
 import os
 import re
+import tempfile
+import threading
 from typing import Any, Callable, Dict, List, Optional
 
 import chromadb
 
-CHROMA_PATH = os.getenv("CHROMA_PATH", os.path.join(os.getcwd(), "chroma_db"))
+
+def _resolve_chroma_path() -> str:
+    """Uses CHROMA_PATH or ./chroma_db, falling back to a temp dir if that isn't writable."""
+    path = os.getenv("CHROMA_PATH") or os.path.join(os.getcwd(), "chroma_db")
+    try:
+        os.makedirs(path, exist_ok=True)
+        if not os.access(path, os.W_OK):
+            raise OSError("not writable")
+    except OSError:
+        path = os.path.join(tempfile.gettempdir(), "repomind_chroma")
+        os.makedirs(path, exist_ok=True)
+    return os.path.abspath(path)
+
+
+CHROMA_PATH = _resolve_chroma_path()
 PREFIX = "rm_"
 _HEADER = "# File: "
 
 _client = None
 _embed = None
+_client_lock = threading.Lock()
+
+
+def _make_client():
+    try:
+        return chromadb.PersistentClient(path=CHROMA_PATH)
+    except KeyError:
+        # Chroma's internal registry of open databases got out of sync. Reset it and retry once.
+        try:
+            from chromadb.api.shared_system_client import SharedSystemClient
+            SharedSystemClient.clear_system_cache()
+        except Exception:
+            pass
+        return chromadb.PersistentClient(path=CHROMA_PATH)
 
 
 def _get_client():
+    """One shared client. The lock stops two Streamlit sessions from creating it at the same time."""
     global _client
     if _client is None:
-        _client = chromadb.PersistentClient(path=CHROMA_PATH)
+        with _client_lock:
+            if _client is None:
+                _client = _make_client()
     return _client
 
 

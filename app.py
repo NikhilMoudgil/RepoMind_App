@@ -205,7 +205,11 @@ with st.sidebar:
         else:
             index_repository(url, branch.strip())
 
-    repos = vs.list_repos()
+    try:
+        repos = vs.list_repos()
+    except Exception as e:  # show the real cause instead of Streamlit's redacted error page
+        st.error(f"Could not open the vector database: {type(e).__name__}: {e}")
+        st.stop()
     if repos:
         st.divider()
         st.markdown("**Indexed repositories**")
